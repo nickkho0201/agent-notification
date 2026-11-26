@@ -30,6 +30,22 @@ function check(name, condition, detail) {
   console.log(`${condition ? "PASS" : "FAIL"} ${name}${detail && !condition ? " :: " + detail : ""}`);
 }
 
+// Время в тесте не зависит от локальной зоны машины: абсолютный момент (UTC) сериализуется
+// с намеренно выбранным смещением +03:00 через UTC-арифметику. Иначе приклеенный к локальным
+// часам offset сдвигал бы момент и в поясах восточнее +03 давал бы прошедшее время.
+const pad = (n) => String(n).padStart(2, "0");
+function isoAt(epochMs) {
+  const d = new Date(epochMs + 180 * 60 * 1000);
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}+03:00`
+  );
+}
+// Секунда на границе вверх: момент строго в будущем и совпадает с точностью до секунды.
+function futureSecond(msFromNow) {
+  return Math.ceil((Date.now() + msFromNow) / 1000) * 1000;
+}
+
 child.stdout.on("data", (chunk) => {
   buffer += chunk.toString("utf8");
   let index;
@@ -136,20 +152,21 @@ try {
   });
   check("schedule: произвольный аргумент отклонён", extra.result?.isError === true);
 
-  const future = new Date(Date.now() + 42 * 60 * 1000);
-  const pad = (n) => String(n).padStart(2, "0");
-  const local =
-    `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T` +
-    `${pad(future.getHours())}:${pad(future.getMinutes())}:${pad(future.getSeconds())}`;
+  const future = futureSecond(42 * 60 * 1000);
+  const at = isoAt(future);
   const text = 'Тест: <b>&"кавычки"</b>\nвторая строка — Юникод ✓';
+
+  check("time helper: +03 — тот же абсолютный момент", Date.parse(at) === future, JSON.stringify({ at, future: new Date(future).toISOString() }));
+  check("time helper: срок в будущем", Date.parse(at) > Date.now(), at);
 
   const created = await request("tools/call", {
     name: "schedule_reminder",
-    arguments: { at: local + "+03:00", text },
+    arguments: { at, text },
   });
   const createdPayload = created.result?.structuredContent ?? textPayload(created);
   check("schedule: создано", created.result?.isError === false && /^rem_[a-z0-9]+$/.test(createdPayload.id ?? ""), JSON.stringify(created.result));
   check("schedule: windowsTaskRegistered=true", createdPayload.windowsTaskRegistered === true, JSON.stringify(createdPayload));
+  check("schedule: dueUtc — запрошенный момент", Date.parse(createdPayload.dueUtc) === Date.parse(at), JSON.stringify({ dueUtc: createdPayload.dueUtc, at }));
   check("schedule: текст сохранён как данные", createdPayload.text === text);
   check("schedule: sweepTaskRegistered — boolean", typeof createdPayload.sweepTaskRegistered === "boolean", JSON.stringify(createdPayload.sweepTaskRegistered));
 
@@ -205,13 +222,11 @@ try {
   const badArg = await request("tools/call", { name: "list_reminders", arguments: { command: "calc.exe" } });
   check("list: произвольный аргумент отклонён", badArg.result?.isError === true);
 
-  const future2 = new Date(Date.now() + 90 * 60 * 1000);
-  const local2 =
-    `${future2.getFullYear()}-${pad(future2.getMonth() + 1)}-${pad(future2.getDate())}T` +
-    `${pad(future2.getHours())}:${pad(future2.getMinutes())}:${pad(future2.getSeconds())}`;
+  const future2 = futureSecond(90 * 60 * 1000);
+  const at2 = isoAt(future2);
   const second = await request("tools/call", {
     name: "schedule_reminder",
-    arguments: { at: local2 + "+03:00", text: "Оплата на этой неделе" },
+    arguments: { at: at2, text: "Оплата на этой неделе" },
   });
   const secondPayload = second.result?.structuredContent ?? {};
   check("schedule: создано второе", second.result?.isError === false && /^rem_[a-z0-9]+$/.test(secondPayload.id ?? ""));
@@ -271,23 +286,21 @@ try {
   check("update: id сохранён", updatedTextPayload.id === createdPayload.id);
   check("update: windowsTaskRegistered=true, syncPending=false", updatedTextPayload.windowsTaskRegistered === true && updatedTextPayload.syncPending === false, JSON.stringify(updatedTextPayload));
 
-  const later = new Date(Date.now() + 120 * 60 * 1000);
-  const localLater =
-    `${later.getFullYear()}-${pad(later.getMonth() + 1)}-${pad(later.getDate())}T` +
-    `${pad(later.getHours())}:${pad(later.getMinutes())}:${pad(later.getSeconds())}`;
+  const later = futureSecond(120 * 60 * 1000);
+  const atLater = isoAt(later);
   const updatedDue = await request("tools/call", {
     name: "update_reminder",
-    arguments: { id: createdPayload.id, at: localLater + "+03:00" },
+    arguments: { id: createdPayload.id, at: atLater },
   });
   const updatedDuePayload = updatedDue.result?.structuredContent ?? {};
   check("update: срок изменён", updatedDue.result?.isError === false && updatedDuePayload.dueChanged === true && updatedDuePayload.textChanged === false, JSON.stringify(updatedDue.result));
-  check("update: новый срок — запрошенный момент", Date.parse(updatedDuePayload.dueUtc) === Date.parse(localLater + "+03:00") - (Date.parse(localLater + "+03:00") % 1000), JSON.stringify(updatedDuePayload.dueUtc));
+  check("update: новый срок — запрошенный момент", Date.parse(updatedDuePayload.dueUtc) === Date.parse(atLater), JSON.stringify({ dueUtc: updatedDuePayload.dueUtc, at: atLater }));
   check("update: перерегистрация под тем же именем", updatedDuePayload.windowsTaskRegistered === true && updatedDuePayload.syncPending === false && updatedDuePayload.windowsTaskName === createdPayload.windowsTaskName, JSON.stringify(updatedDuePayload));
   check("update: текст сохранён при переносе", updatedDuePayload.text === "Обновлённый текст <&> ✓");
 
   const updateNoop = await request("tools/call", {
     name: "update_reminder",
-    arguments: { id: createdPayload.id, at: localLater + "+03:00", text: "Обновлённый текст <&> ✓" },
+    arguments: { id: createdPayload.id, at: atLater, text: "Обновлённый текст <&> ✓" },
   });
   check("update: повтор идемпотентен", updateNoop.result?.isError === false && updateNoop.result?.structuredContent?.changed === false);
 
@@ -337,6 +350,35 @@ try {
       resolve();
     });
   });
+  // Страховка на случай падения до отмены записей: удаляем задачи только в проверенном
+  // временном AGENTNOTIFY_HOME (имя задачи включает хэш пути хранилища), Live не затрагивается.
+  if (results.some((r) => !r.ok) || process.exitCode) {
+    const cleaned = await new Promise((resolve) => {
+      const cleanup = spawn(exe, ["uninstall", "--home", home], {
+        stdio: "ignore",
+        env: { ...process.env, AGENTNOTIFY_HOME: home },
+        windowsHide: true,
+      });
+      const timer = setTimeout(() => {
+        cleanup.kill();
+        resolve(false);
+      }, 30000);
+      cleanup.on("error", () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+      cleanup.on("exit", (code) => {
+        clearTimeout(timer);
+        resolve(code === 0);
+      });
+    });
+    console.log(
+      cleaned
+        ? "cleanup: задачи временного home удалены после сбоя"
+        : "cleanup: не удалось удалить задачи временного home; удалите вручную: " +
+            `"${exe}" uninstall --home "${home}"`,
+    );
+  }
   try {
     rmSync(home, { recursive: true, force: true });
   } catch {}

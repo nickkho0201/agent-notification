@@ -1,0 +1,27 @@
+# Сборка и промежуточные файлы
+bin/
+obj/
+.vs/
+*.user
+*.suo
+TestResults/
+artifacts/
+publish/
+staging/
+
+# Локальный Backlog и его служебные каталоги — не публикуются
+/backlog/
+/.backlog/
+
+# Локальные конфиги харнесса могут содержать абсолютные пути и идентификаторы;
+# переносимый пример лежит в examples/opencode.json.example
+/opencode.json
+/opencode.jsonc
+/.opencode/opencode.json
+/.opencode/opencode.jsonc
+
+# Runtime-данные приложения (очередь, журналы), если каталог оказался внутри репозитория
+*.db
+*.db-wal
+*.db-shm
+*.log

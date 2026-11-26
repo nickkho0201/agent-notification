@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-notification": {
+      "command": "<каталог установки>/AgentNotify.exe",
+      "args": ["serve-mcp"],
+      "env": {}
+    }
+  }
+}
